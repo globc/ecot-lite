@@ -241,11 +241,13 @@ class VLAMetrics:
         self.global_step = 0 if resume_step is None else resume_step
         self.epoch = 0 if resume_epoch is None else resume_epoch
         self.start_time, self.step_start_time = time.time(), time.time()
+        self.deque_window_size = window_size
         self.state = {
             "loss_raw": deque(maxlen=grad_accumulation_steps),
             "loss": deque(maxlen=window_size),
             "l1_loss": deque(maxlen=window_size),
             "action_accuracy": deque(maxlen=window_size),
+            "cot_accuracy": deque(maxlen=window_size),
             "step_time": deque(maxlen=window_size),
             "lr": [],
         }
@@ -300,6 +302,8 @@ class VLAMetrics:
                 self.state["loss_raw"].append(loss_val)
                 self.state["loss"].append(loss_val)
             else:
+                if key not in self.state.keys():
+                    self.state[key] = deque(maxlen=self.deque_window_size)
                 self.state[key].append(value.detach())
 
     def commit_for_dataset(self, dataset_name: str, **kwargs) -> None:
@@ -312,6 +316,7 @@ class VLAMetrics:
         loss = torch.stack(list(self.state["loss"])).mean().item()
         l1_loss = torch.stack(list(self.state["l1_loss"])).mean().item()
         action_accuracy = torch.stack(list(self.state["action_accuracy"])).mean().item()
+        cot_accuracy = torch.stack(list(self.state["cot_accuracy"])).mean().item()
         step_time, lr = np.mean(list(self.state["step_time"])), self.state["lr"][-1]
         status = self.get_status(loss)
 
@@ -327,6 +332,13 @@ class VLAMetrics:
 
         # Fire to Trackers
         prefix = "VLA Train"
+
+        tag_accuracy_metrics = {
+            f"{prefix}/{key}": torch.stack(list(self.state[key])).mean().item()
+            for key in self.state.keys()
+            if "tag_accuracy" in key
+        }
+
         self.log(
             self.global_step,
             metrics={
@@ -335,14 +347,16 @@ class VLAMetrics:
                 f"{prefix}/Loss": loss,
                 f"{prefix}/L1 Loss": l1_loss,
                 f"{prefix}/Action Token Accuracy": action_accuracy,
+                f"{prefix}/CoT Token Accuracy": cot_accuracy,
                 f"{prefix}/Loss (Raw)": loss_raw,
                 f"{prefix}/Learning Rate": lr,
                 f"{prefix}/Step Time": step_time,
                 **dataset_metrics,
+                **tag_accuracy_metrics,
             },
         )
         return status
 
-    def finalize(self) -> str:
+    def finalize(self):
         for tracker in self.trackers:
             tracker.finalize()

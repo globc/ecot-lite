@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler, IterableDa
 from tqdm import tqdm
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+from prismatic.util.cot_utils import get_cot_tags_list
 from prismatic.models.vlms import PrismaticVLM
 from prismatic.overwatch import initialize_overwatch
 from prismatic.training.metrics import Metrics, VLAMetrics
@@ -29,6 +30,8 @@ from prismatic.vla.action_tokenizer import ActionTokenizer
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
 
+# Qwen EOS Token
+EOS_TOKEN = 151643
 
 # === Abstract Base Class for an arbitrary Training Strategy ===
 class TrainingStrategy(ABC):
@@ -324,25 +327,112 @@ class TrainingStrategy(ABC):
                 #   2) Compute boolean "mask" where "labels > 2" (where 2 is ID for `EOS_TOKEN`)
                 #           => If masking out EOS, then it's just "labels != -100 (IGNORE_INDEX)
                 #   3) Compute masked accuracy as `(preds == logits) & mask` --> sum/divide by # unmasked!
-                action_preds = output.logits[:, self.vlm.vision_backbone.num_patches : -1].argmax(dim=2)
-                action_gt = batch["labels"][:, 1:].to(action_preds.device)
-                mask = (action_tokenizer.action_token_end_idx > action_gt) & (action_gt > action_tokenizer.action_token_begin_idx)
+                token_preds = output.logits[:, self.vlm.vision_backbone.num_patches : -1].argmax(dim=2)
+                token_gt = batch["labels"][:, 1:].to(token_preds.device)
+                action_mask = (action_tokenizer.action_token_end_idx > token_gt) & (token_gt > action_tokenizer.action_token_begin_idx)
+
+                def get_masks(tokens, tags):
+                    tag_tokens = dict()
+
+                    for tag in tags:
+                        encoded_tags = self.vlm.llm_backbone.tokenizer.encode_plus(tag, return_tensors="pt")
+                        tag_ids = encoded_tags["input_ids"][0]
+                        tag_tokens[tag] = tag_ids[1:].to(tokens.device)
+
+                    tag_masks = dict()
+                    prev_tag = None
+                    prev_pos = 0
+
+                    def make_mask(a, b):
+                        mask = torch.zeros_like(tokens)
+                        mask[a:b] = 1
+                        return mask
+
+                    for i in range(len(tokens) - 1):
+                        for tag, tag_ids in tag_tokens.items():
+                            if i + len(tag_ids) > len(tokens):
+                                continue
+
+                            if torch.all(tokens[i : i + len(tag_ids)] == tag_ids):
+                                tag_masks[prev_tag] = make_mask(prev_pos, i)
+                                prev_tag = tag
+                                prev_pos = i + len(tag_ids)
+
+                    tag_masks[prev_tag] = make_mask(prev_pos, len(tokens))
+
+                    for tag in tags:
+                        if tag not in tag_masks:
+                            tag_masks[tag] = make_mask(0, 0)
+
+                    return tag_masks
+
+                prompt_tags = get_cot_tags_list()
+
+                def get_final_masks(tokens, tags):
+                    final_masks = {tag: [] for tag in tags}
+
+                    for group in tokens:
+                        group_masks = get_masks(group, tags)
+
+                        for tag in tags:
+                            final_masks[tag].append(group_masks[tag])
+
+                    for tag in tags:
+                        final_masks[tag] = torch.stack(final_masks[tag], dim=0)
+
+                    return final_masks
+
+                # Dense reasoning metrics
+                if metrics.global_step % 100 == 0:
+                    final_pred_masks = get_final_masks(token_preds, prompt_tags)
+                    final_gt_masks = get_final_masks(token_gt, prompt_tags)
+
+                    # Compute accuracy for each tag
+                    for tag in prompt_tags:
+                        correct_tags = [0, 0]
+
+                        for reasoning_pred, mask_pred, reasoning_gt, mask_gt in zip(
+                            token_preds, final_pred_masks[tag], token_gt, final_gt_masks[tag]
+                        ):
+                            tag_pred = torch.masked_select(reasoning_pred, mask_pred.bool())
+                            tag_gt = torch.masked_select(reasoning_gt, mask_gt.bool())
+
+                            max_size = max(len(tag_pred), len(tag_gt))
+                            tag_pred = torch.nn.functional.pad(tag_pred, (0, max_size - len(tag_pred)))
+                            tag_gt = torch.nn.functional.pad(tag_gt, (0, max_size - len(tag_gt)))
+
+                            correct_tags[0] += (tag_pred == tag_gt).sum().float()
+                            correct_tags[1] += len(tag_gt)
+
+                        if correct_tags[1] > 0:
+                            tag_accuracy = correct_tags[0] / correct_tags[1]
+                            metrics.commit(**{f"{tag[:-1].lower()}_tag_accuracy": tag_accuracy})
 
                 # Compute Accuracy
-                correct_preds = (action_preds == action_gt) & mask
-                action_accuracy = correct_preds.sum().float() / mask.sum().float()
+                correct_action_preds = (token_preds == token_gt) & action_mask
+                action_accuracy = correct_action_preds.sum().float() / action_mask.sum().float()
 
                 # Compute L1 Loss on Predicted (Continuous) Actions
                 continuous_actions_pred = torch.tensor(
-                    action_tokenizer.decode_token_ids_to_actions(action_preds[mask].cpu().numpy())
+                    action_tokenizer.decode_token_ids_to_actions(token_preds[action_mask].cpu().numpy())
                 )
                 continuous_actions_gt = torch.tensor(
-                    action_tokenizer.decode_token_ids_to_actions(action_gt[mask].cpu().numpy())
+                    action_tokenizer.decode_token_ids_to_actions(token_gt[action_mask].cpu().numpy())
                 )
                 action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
 
+                # Compute Accuracy on non-action (ie CoT) tokens
+                cot_mask = (token_gt > EOS_TOKEN) & ~action_mask
+                correct_cot_preds = (token_preds == token_gt) & cot_mask
+                cot_accuracy = correct_cot_preds.sum().float() / cot_mask.sum().float()
+
                 # Commit Metrics
-                metrics.commit(action_accuracy=action_accuracy, l1_loss=action_l1_loss, update_step_time=True)
+                metrics.commit(
+                    action_accuracy=action_accuracy,
+                    cot_accuracy=cot_accuracy,
+                    l1_loss=action_l1_loss,
+                    update_step_time=True,
+                )
 
                 # Compute metrics per dataset --> only on rank_zero since we don't log them on other workers anyways
                 if overwatch.is_rank_zero():
@@ -350,15 +440,17 @@ class TrainingStrategy(ABC):
                     if len(datasets) > 1:
                         for ds in datasets:
                             ds_mask = torch.tensor([elem == ds for elem in batch["dataset_names"]])
-                            action_accuracy_ds = correct_preds[ds_mask].sum().float() / mask[ds_mask].sum().float()
+                            action_accuracy_ds = (
+                                correct_action_preds[ds_mask].sum().float() / action_mask[ds_mask].sum().float()
+                            )
                             continuous_actions_pred_ds = torch.tensor(
                                 action_tokenizer.decode_token_ids_to_actions(
-                                    action_preds[ds_mask][mask[ds_mask]].cpu().numpy()
+                                    token_preds[ds_mask][action_mask[ds_mask]].cpu().numpy()
                                 )
                             )
                             continuous_actions_gt_ds = torch.tensor(
                                 action_tokenizer.decode_token_ids_to_actions(
-                                    action_gt[ds_mask][mask[ds_mask]].cpu().numpy()
+                                    token_gt[ds_mask][action_mask[ds_mask]].cpu().numpy()
                                 )
                             )
                             action_l1_loss_ds = torch.nn.functional.l1_loss(

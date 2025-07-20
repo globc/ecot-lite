@@ -509,13 +509,13 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         """Thin wrapper around .generate() that decodes predicted actions and unnormalizes them."""
         # If the special empty token ('') does not already appear after the colon (':') token in the prompt
         # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
-        if not torch.all(input_ids[:, -1] == 29871):
-            input_ids = torch.cat(
-                (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
-            )
+        # if not torch.all(input_ids[:, -1] == 29871):
+        #     input_ids = torch.cat(
+        #         (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
+        #     )
 
         # Run VLA inference
-        generated_ids = self.generate(input_ids, max_new_tokens=self.get_action_dim(unnorm_key), **kwargs)
+        generated_ids = self.generate(input_ids, **kwargs)
 
         # Extract predicted action tokens and translate into (normalized) continuous actions
         predicted_action_token_ids = generated_ids[0, -self.get_action_dim(unnorm_key) :].cpu().numpy()
@@ -533,7 +533,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             normalized_actions,
         )
 
-        return actions
+        return actions, generated_ids
 
     @staticmethod
     def _check_unnorm_key(norm_stats: Dict[str, Dict[str, Any]], unnorm_key: Optional[str]) -> str:
