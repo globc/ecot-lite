@@ -19,7 +19,7 @@ import tensorflow_datasets as tfds
 from huggingface_hub import hf_hub_download
 
 from prismatic.overwatch import initialize_overwatch
-from prismatic.util.cot_utils import get_cot_database_keys, get_cot_tags_list
+from prismatic.util.cot_utils import get_cot_database_keys, get_cot_tags_list, CotTag
 from prismatic.vla.datasets.rlds import obs_transforms, traj_transforms
 from prismatic.vla.datasets.rlds.utils import goal_relabeling, task_augmentation
 from prismatic.vla.datasets.rlds.utils.data_utils import (
@@ -57,7 +57,7 @@ def make_dataset_from_rlds(
     action_normalization_mask: Optional[List[bool]] = None,
     num_parallel_reads: int = tf.data.AUTOTUNE,
     num_parallel_calls: int = tf.data.AUTOTUNE,
-    reasoning_dataset_path: str = "~/.cache/reasonings_dataset.json",
+    reasoning_dataset_path: str = "data/embodied_features_and_demos_libero/libero_reasonings.json",
 ) -> Tuple[dl.DLataset, dict]:
     """
     This function is responsible for loading a specific RLDS dataset from storage and getting it into a standardized
@@ -155,7 +155,7 @@ def make_dataset_from_rlds(
         values = []
 
         def reasoning_dict_to_str(d):
-            tags = get_cot_tags_list()[:-1]  # exclude ACTION
+            tags = get_cot_tags_list()[1:-1]  # exclude ACTION and TASK
             database_keys = get_cot_database_keys()
             reasoning_parts = [(tag, d[database_keys[tag]]) for tag in tags]
 
@@ -165,41 +165,15 @@ def make_dataset_from_rlds(
 
         for file_name in raw_dict.keys():
             for episode_id in raw_dict[file_name].keys():
-                if "reasoning" not in raw_dict[file_name][episode_id].keys():
+                if not raw_dict[file_name][episode_id]:
                     has_reasoning[0] += 1
                     continue
                 else:
                     has_reasoning[1] += 1
 
-                for i in raw_dict[file_name][episode_id]["reasoning"].keys():
+                for i in raw_dict[file_name][episode_id].keys():
                     keys.append(file_name + "_" + str(episode_id) + "_" + i)
-                    reasoning_dict = raw_dict[file_name][episode_id]["reasoning"][i]
-
-                    gripper_lookahead_n = 5  # list this many future positions of the gripper
-                    trajectory_features = raw_dict[file_name][episode_id]["features"]
-
-                    reasoning_dict["gripper"] = ""
-                    if "gripper_position" in trajectory_features.keys():
-                        if trajectory_features["gripper_position"] is not None:
-                            if 0 <= int(i) < len(trajectory_features["gripper_position"]):
-                                future_positions = []
-                                for j in range(gripper_lookahead_n):
-                                    if int(i) + j < len(trajectory_features["gripper_position"]):
-                                        future_positions += trajectory_features["gripper_position"][int(i) + j]
-                                    else:
-                                        future_positions += future_positions[-2:]
-
-                                reasoning_dict["gripper"] = str(future_positions)
-
-                    reasoning_dict["bboxes"] = ""
-                    if "bboxes" in trajectory_features.keys():
-                        if trajectory_features["bboxes"] is not None:
-                            if 0 <= int(i) < len(trajectory_features["bboxes"]):
-                                if len(trajectory_features["bboxes"][int(i)]) > 0:
-                                    boxes_list = trajectory_features["bboxes"][int(i)]
-                                    reasoning_dict["bboxes"] = ", ".join(
-                                        [f"{name} {box!s}" for prob, name, box in boxes_list]
-                                    )
+                    reasoning_dict = raw_dict[file_name][episode_id][i]
 
                     values.append(reasoning_dict_to_str(reasoning_dict))
 
@@ -262,12 +236,21 @@ def make_dataset_from_rlds(
             task["language_instruction"] = traj.pop(language_key)
 
         file_name = traj["traj_metadata"]["episode_metadata"]["file_path"][0]
-        episode_id = traj["traj_metadata"]["episode_metadata"]["episode_id"][0]
+        episode_id = traj["traj_metadata"]["episode_metadata"]["demo_id"][0]
 
         file_names = tf.repeat(file_name, traj_len)
         episode_ids = tf.as_string(tf.repeat(episode_id, traj_len))
         indices = tf.as_string(tf.range(traj_len))
         reasonings = reasoning_dataset.lookup(file_names + "_" + episode_ids + "_" + indices)
+
+        reasonings_w_task = tf.strings.join([CotTag.TASK.value + "@" + task["language_instruction"], reasonings], separator="@")
+
+        # Don't prepend task to reasoning if empty
+        reasonings = tf.where(
+            tf.equal(reasonings, ""),
+            reasonings,
+            reasonings_w_task
+        )
 
         traj = {
             "observation": new_obs,

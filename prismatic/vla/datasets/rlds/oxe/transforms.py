@@ -920,4 +920,5 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_goal_no_noops": libero_dataset_transform,
     "libero_10_no_noops": libero_dataset_transform,
     "libero_90": libero_dataset_transform,
+    "libero_lm_90": libero_dataset_transform,
 }

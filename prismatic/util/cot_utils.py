@@ -36,10 +36,10 @@ def get_cot_database_keys():
         CotTag.TASK.value: "task",
         CotTag.PLAN.value: "plan",
         CotTag.VISIBLE_OBJECTS.value: "bboxes",
-        CotTag.SUBTASK_REASONING.value: "subtask_reason",
+        CotTag.SUBTASK_REASONING.value: "subtask_reasoning",
         CotTag.SUBTASK.value: "subtask",
-        CotTag.MOVE_REASONING.value: "move_reason",
-        CotTag.MOVE.value: "move",
+        CotTag.MOVE_REASONING.value: "movement_reasoning",
+        CotTag.MOVE.value: "movement",
         CotTag.GRIPPER_POSITION.value: "gripper",
         CotTag.ACTION.value: "action",
     }
