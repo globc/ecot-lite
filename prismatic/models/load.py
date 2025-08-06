@@ -211,8 +211,10 @@ def load_vla(
     )
 
     if image_sequence_len is None:
-        if hasattr(model_cfg, "image_sequence_len"):
-            image_sequence_len = model_cfg.image_sequence_len
+        # if hasattr(model_cfg, "image_sequence_len"):
+        #     image_sequence_len = model_cfg.image_sequence_len
+        if "image_sequence_len" in vla_cfg:
+            image_sequence_len = vla_cfg["image_sequence_len"]
         else:
             image_sequence_len = 1
 

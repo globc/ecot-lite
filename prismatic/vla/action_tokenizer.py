@@ -173,12 +173,12 @@ class VQActionTokenizer(ActionTokenizer):
         ret_action = self.vq_vae.get_action_from_latent(latent)
 
         # reshape to be a flat array if the input was a single action
-        if action_token_ids.shape[0] == 1 and len(initial_shape) == 1:
-            return ret_action[0, 0]
+        # if action_token_ids.shape[0] == 1 and len(initial_shape) == 1:
+        #     return ret_action[0, 0]
 
         # get the first horizon element of the returned actions (VQ might return an action horizon)
         # TODO parameterize this
-        return ret_action[:, 0]
+        return ret_action
 
     @property
     def required_future_horizon(self) -> int:

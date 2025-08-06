@@ -19,9 +19,14 @@ Usage:
 
 import os
 import sys
+import json
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
+from PIL import Image
+import torch
+import torch.distributed as dist
 
 import draccus
 import numpy as np
@@ -89,11 +94,26 @@ class GenerateConfig:
 
     seed: int = 7                                    # Random Seed (for reproducibility)
 
+    distributed: bool = False              # Enable torch.distributed
+
+    subset_size: Optional[int] = None # Sample subset of tasks from task suite
+    num_open_loop_steps: int = 8                     # Number of actions to execute open-loop before requerying policy (AC size)
+    save_reasoning: bool = False                # Save reasoning and image per step
     # fmt: on
 
 
 @draccus.wrap()
 def eval_libero(cfg: GenerateConfig) -> None:
+    if cfg.distributed:
+        if not dist.is_initialized():
+            dist.init_process_group(
+                backend="nccl"
+            )
+        # After init, sync actual rank and world size
+        cfg.rank = dist.get_rank()
+        cfg.world_size = dist.get_world_size()
+        torch.cuda.set_device(cfg.rank % torch.cuda.device_count())
+
     assert cfg.pretrained_checkpoint is not None, "cfg.pretrained_checkpoint must not be None!"
     if "image_aug" in cfg.pretrained_checkpoint:
         assert cfg.center_crop, "Expecting `center_crop==True` because model was trained with image augmentations!"
@@ -103,7 +123,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
     set_seed_everywhere(cfg.seed)
 
     # [OpenVLA] Set action un-normalization key
-    cfg.unnorm_key = cfg.task_suite_name
+    cfg.unnorm_key = "libero_lm_90"
 
     # Load model
     model = get_model(cfg)
@@ -150,7 +170,22 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    task_ids = list(range(num_tasks_in_suite))
+    if cfg.subset_size is not None:
+        rng = np.random.RandomState(cfg.seed)
+        task_ids = rng.choice(task_ids, size=min(cfg.subset_size, num_tasks_in_suite), replace=False).tolist()
+        task_ids.sort()
+        print(f"Sampled task IDs: {task_ids}")
+        log_file.write(f"Sampled task IDs: {task_ids}\n")
+
+    # Distribute sampled tasks
+    if cfg.distributed:
+        my_task_ids = task_ids[cfg.rank :: cfg.world_size]
+    else:
+        my_task_ids = task_ids
+
+    print(f"Rank {cfg.rank} → evaluating tasks: {my_task_ids}")
+    for task_id in tqdm.tqdm(my_task_ids, desc=f"Rank {cfg.rank} tasks"):
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -172,6 +207,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
 
+            action_queue = deque(maxlen=cfg.num_open_loop_steps)
             # Setup
             t = 0
             replay_images = []
@@ -233,14 +269,33 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         ),
                     }
 
-                    # Query model to get action
-                    action = get_action(
-                        cfg,
-                        model,
-                        observation,
-                        task_description,
-                        processor=processor,
-                    )
+                    if len(action_queue) == 0:
+                        # Query model to get action
+                        actions, reasoning = get_action(
+                            cfg,
+                            model,
+                            observation,
+                            task_description,
+                            processor=processor,
+                        )
+                        action_queue.extend(actions)
+
+                        if cfg.save_reasoning:
+                            img = Image.fromarray(get_libero_image(obs, resize_size))
+                            image_task_path = os.path.join("experiments/robot/libero/analysis/images", str(task_id))
+                            os.makedirs(image_task_path, exist_ok=True)
+                            image_path = os.path.join(image_task_path, str(t) + ".png")
+                            img.save(image_path)
+
+                            results_path = os.path.join("experiments/robot/libero/analysis", str(task_id) + "_task.jsonl")
+                            result = {
+                                "step": t,
+                                "reasoning": reasoning,
+                            }
+                            with open(results_path, "a") as f:
+                                f.write(json.dumps(result) + "\n")
+
+                    action = action_queue.popleft()
 
                     # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
                     action = normalize_gripper_action(action, binarize=True)
@@ -301,6 +356,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     f"num_episodes/{task_description}": task_episodes,
                 }
             )
+
+        results_path = os.path.join("experiments/robot/libero", run_id + "_results.jsonl")
+        result = {
+            "task_id": task_id,
+            "task_description": task_description,
+            "task_successes": task_successes,
+            "task_episodes": task_episodes,
+            "task_success_rate": float(task_successes) / float(task_episodes),
+        }
+        with open(results_path, "a") as f:
+            f.write(json.dumps(result) + "\n")
 
     # Save local log file
     log_file.close()

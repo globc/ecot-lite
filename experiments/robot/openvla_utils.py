@@ -218,8 +218,8 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
     inputs = processor(prompt, image).to(DEVICE, dtype=torch.bfloat16)
 
     # Get action.
-    action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
-    return action
+    actions, reasoning = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
+    return [actions[0, i] for i in range(actions.shape[1])], reasoning
 
 
 def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, **kwargs):
@@ -258,5 +258,6 @@ def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unn
     if len(processed_images) == 1:
         processed_images = processed_images[0]
 
-    action = vla.predict_action(processed_images, task_label, unnorm_key=unnorm_key, **kwargs)
-    return action
+    actions, reasoning = vla.predict_action(processed_images, task_label, unnorm_key=unnorm_key, **kwargs)
+
+    return [actions[0, i] for i in range(actions.shape[1])], reasoning

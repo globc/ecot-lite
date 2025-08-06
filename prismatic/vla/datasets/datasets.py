@@ -102,10 +102,12 @@ class RLDSBatchTransform:
         tokenized_action = self.action_tokenizer(action)
         raw_action_tokens = self.base_tokenizer(tokenized_action)["input_ids"]
 
+        use_cot = True # Change to get baseline w/o CoT
+        target = f"{reasoning} {CotTag.ACTION.value} {tokenized_action}" if use_cot else tokenized_action
         conversation.extend(
             [
                 {"from": "human", "value": f"What action should the robot take to {lang}?"},
-                {"from": "gpt", "value": f"{reasoning} {CotTag.ACTION.value} {tokenized_action}"},
+                {"from": "gpt", "value": target},
             ]
         )
         num_answer_tokens = len(raw_action_tokens)

@@ -36,13 +36,13 @@ class OpenVLA(PrismaticVLM):
         self.norm_stats = norm_stats
         self.action_tokenizer = action_tokenizer
 
-        self.use_cot = True
+        self.use_cot = True # Change to get baseline w/o CoT
         self.use_async = False
         self.use_interactive = False
 
         self.base_prompt = f"{CotTag.TASK.value}"
 
-        self.max_freezing_time = 5
+        self.max_freezing_time = 0
         self.time_frozen = 0
         self.frozen_prompt = self.base_prompt
 
@@ -100,13 +100,26 @@ class OpenVLA(PrismaticVLM):
         # Prepare Inputs
         init_input_ids = tokenizer(prompt_text, truncation=True, return_tensors="pt").input_ids.to(self.device)
 
+        num_end_tokens = 1
+        if isinstance(tokenizer, Qwen2TokenizerFast):
+            # Qwen has <|im_end|><|endoftext|> for example
+            num_end_tokens = 2
+        
         def build_prompt(prompt_prefix, input_ids):
-            if isinstance(tokenizer, LlamaTokenizerFast) or isinstance(tokenizer, Qwen2TokenizerFast):
+            if isinstance(tokenizer, LlamaTokenizerFast):
                 # Note: We start the answer with "TASK:" to force generating the reasoning part.
                 return torch.cat(
                     (
                         input_ids,
                         tokenizer(prompt_prefix, return_tensors="pt").input_ids.to(self.device)[:, 1:],
+                    ),
+                    dim=1,
+                )
+            elif isinstance(tokenizer, Qwen2TokenizerFast):
+                return torch.cat(
+                    (
+                        input_ids,
+                        tokenizer(prompt_prefix, return_tensors="pt").input_ids.to(self.device),
                     ),
                     dim=1,
                 )
@@ -187,17 +200,16 @@ class OpenVLA(PrismaticVLM):
                             prompt = user_response
                 else:
                     # run generate and wait for the result
-                    print(f"Prompt freezing: {self.time_frozen} turns left.")
+                    # print(f"Prompt freezing: {self.time_frozen} turns left.")
                     if self.time_frozen <= 0:
                         self.frozen_prompt = self.base_prompt
                         self.time_frozen = self.max_freezing_time
 
                     self.time_frozen -= 1
-                    generated_ids = self.raw_generate(build_prompt(self.frozen_prompt, init_input_ids), pixel_values)
+                    generated_ids = self.raw_generate(build_prompt(self.frozen_prompt, init_input_ids) if self.use_cot else init_input_ids, pixel_values)
 
-                    decoded_tokens = self.llm_backbone.tokenizer.decode(generated_ids[0, :-1])
-                    prompt = decoded_tokens.split("\nOut: ")[-1]
-                    prompt = prompt.split(" ASSISTANT: ")[-1]
+                    decoded_tokens = self.llm_backbone.tokenizer.decode(generated_ids[0, :-num_end_tokens])
+                    prompt = decoded_tokens.split("assistant\n")[-1]
 
                     if " MOVE REASONING: " in prompt:
                         prompt = prompt.split(" MOVE REASONING: ")[0]
@@ -205,10 +217,10 @@ class OpenVLA(PrismaticVLM):
                         prompt = prompt.split(" GRIPPER POSITION: ")[0]
                     self.frozen_prompt = prompt
 
-            generated_ids = generated_ids[:, :-1]  # remove the EOS token
+            generated_ids = generated_ids[:, :-num_end_tokens]  # remove the EOS token
             decoded_tokens = self.llm_backbone.tokenizer.decode(generated_ids[0])
 
-            print("Reasoning:", decoded_tokens)
+            # print("Reasoning:", decoded_tokens)
             if info_dict is not None:
                 info_dict["decoded_tokens"] = decoded_tokens
             # fmt: on
@@ -227,7 +239,7 @@ class OpenVLA(PrismaticVLM):
             normalized_actions,
         )
 
-        return actions
+        return actions, decoded_tokens
 
     @staticmethod
     def _check_unnorm_key(norm_stats: Dict, unnorm_key: str) -> str:
