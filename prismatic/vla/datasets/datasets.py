@@ -37,7 +37,11 @@ def reasoning_dropout(reasoning: str, dropout_prob: float) -> Tuple[str, str]:
     reasoning_parts = reasoning.split("@")
     tags = [(reasoning_parts[i], reasoning_parts[i + 1]) for i in range(0, len(reasoning_parts), 2)]
 
-    subset = np.random.rand(len(tags)) > dropout_prob
+    k = np.random.randint(0, len(tags) + 1)
+    dropped_idx = np.random.choice(len(tags), size=k, replace=False)
+    
+    subset = np.ones(len(tags), dtype=bool)
+    subset[dropped_idx] = False
 
     subset_string = (
         "[" + ", ".join([abbreviate_tag(tag) for (tag, _), is_taken in zip(tags, subset) if is_taken]) + "]"
@@ -49,7 +53,7 @@ def reasoning_dropout(reasoning: str, dropout_prob: float) -> Tuple[str, str]:
         excluded_tags = os.environ["EXCLUDE_TAGS"].split(",")
 
     return (
-        " ".join(
+        ";\n".join(
             [f"{tag[0]} {tag[1]}" for tag, is_taken in zip(tags, subset) if (is_taken and tag[0] not in excluded_tags)]
         ),
         subset_string,
@@ -102,8 +106,10 @@ class RLDSBatchTransform:
         tokenized_action = self.action_tokenizer(action)
         raw_action_tokens = self.base_tokenizer(tokenized_action)["input_ids"]
 
-        use_cot = True # Change to get baseline w/o CoT
-        target = f"{reasoning} {CotTag.ACTION.value} {tokenized_action}" if use_cot else tokenized_action
+        use_cot = False # Change to get baseline w/o CoT
+
+        delim = ";\n" if reasoning != "" else ""
+        target = f"{reasoning}{delim}{CotTag.ACTION.value} {tokenized_action}" if use_cot else tokenized_action
         conversation.extend(
             [
                 {"from": "human", "value": f"What action should the robot take to {lang}?"},

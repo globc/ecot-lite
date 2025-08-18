@@ -36,11 +36,11 @@ class OpenVLA(PrismaticVLM):
         self.norm_stats = norm_stats
         self.action_tokenizer = action_tokenizer
 
-        self.use_cot = True # Change to get baseline w/o CoT
+        self.use_cot = False # Change to get baseline w/o CoT
         self.use_async = False
         self.use_interactive = False
 
-        self.base_prompt = f"{CotTag.TASK.value}"
+        self.base_prompt = f"{CotTag.PLAN.value}"
 
         self.max_freezing_time = 0
         self.time_frozen = 0
@@ -53,17 +53,48 @@ class OpenVLA(PrismaticVLM):
             self.prev_time = time.time()
             self.local_trials = 0
 
+    def get_prefix_allowed_tokens_fn(self) -> Callable[[int, torch.Tensor], List[int]]:
+        tokenizer = self.llm_backbone.tokenizer
+        delim_tokens = tokenizer(";\n", add_special_tokens=False)
+
+        from prismatic.util.cot_utils import get_cot_tags_list
+        cot_prefixes = get_cot_tags_list()[1:]  # Exclude TASK
+        
+        def prefix_allowed_tokens_fn(batch_id: int, input_ids: torch.Tensor) -> List[int]:
+            ids = input_ids[0].tolist() if input_ids.dim() == 2 else input_ids.tolist()
+
+            if len(ids) >= len(delim_tokens) and ids[-len(delim_tokens):] == delim_tokens:
+                count = 0
+                for i in range(len(ids) - len(delim_tokens) + 1):
+                    if ids[i:i + len(delim_tokens)] == delim_tokens:
+                        count += 1
+                
+                return [tokenizer(cot_prefixes[count], add_special_tokens=False)[0]]
+
+            return list(range(len(tokenizer)))
+        
+        return prefix_allowed_tokens_fn
+
     def raw_generate(self, input_ids, pixel_values):
         if isinstance(pixel_values, torch.Tensor):
             pixel_values = pixel_values.to(self.device).bfloat16()
         elif isinstance(pixel_values, dict):
             pixel_values = {k: v.to(self.device).bfloat16() for k, v in pixel_values.items()}
 
-        return super(PrismaticVLM, self).generate(
-            input_ids=input_ids.to(self.device),
-            pixel_values=pixel_values,
-            max_new_tokens=1024,
-        )
+        if self.use_cot:
+            return super(PrismaticVLM, self).generate(
+                input_ids=input_ids.to(self.device),
+                pixel_values=pixel_values,
+                max_new_tokens=1024,
+                prefix_allowed_tokens_fn=self.get_prefix_allowed_tokens_fn(),
+            )
+        else:
+            return super(PrismaticVLM, self).generate(
+                input_ids=input_ids.to(self.device),
+                pixel_values=pixel_values,
+                max_new_tokens=1024,
+            )
+
 
     def reset_async(self):
         self.time_frozen = 0

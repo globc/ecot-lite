@@ -243,15 +243,6 @@ def make_dataset_from_rlds(
         indices = tf.as_string(tf.range(traj_len))
         reasonings = reasoning_dataset.lookup(file_names + "_" + episode_ids + "_" + indices)
 
-        reasonings_w_task = tf.strings.join([CotTag.TASK.value + "@" + task["language_instruction"], reasonings], separator="@")
-
-        # Don't prepend task to reasoning if empty
-        reasonings = tf.where(
-            tf.equal(reasonings, ""),
-            reasonings,
-            reasonings_w_task
-        )
-
         traj = {
             "observation": new_obs,
             "task": task,

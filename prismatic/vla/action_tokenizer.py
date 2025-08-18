@@ -199,6 +199,9 @@ ACTION_TOKENIZERS = {
     "libero_vq_h0_extra_action_tokenizer": partial(
         VQActionTokenizer, vq_vae_path="vq/pretrain_vq+mx-libero_90+fach-0+ng-7+nemb-128+nlatent-512", use_extra=True
     ),
+    "libero_vq_h9_extra_action_tokenizer": partial(
+        VQActionTokenizer, vq_vae_path="vq/pretrain_vq+mx-libero_lm_90+fach-9+ng-7+nemb-256+nlatent-512", use_extra=True
+    ),
     # bridge
     "bridge_vq_extra_action_tokenizer": partial(
         VQActionTokenizer,

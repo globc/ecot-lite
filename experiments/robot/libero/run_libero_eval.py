@@ -99,6 +99,7 @@ class GenerateConfig:
     subset_size: Optional[int] = None # Sample subset of tasks from task suite
     num_open_loop_steps: int = 8                     # Number of actions to execute open-loop before requerying policy (AC size)
     save_reasoning: bool = False                # Save reasoning and image per step
+    unnorm_key: str = "libero_lm_90"  # Action un-normalization key
     # fmt: on
 
 
@@ -123,7 +124,6 @@ def eval_libero(cfg: GenerateConfig) -> None:
     set_seed_everywhere(cfg.seed)
 
     # [OpenVLA] Set action un-normalization key
-    cfg.unnorm_key = "libero_lm_90"
 
     # Load model
     model = get_model(cfg)
@@ -282,15 +282,15 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
                         if cfg.save_reasoning:
                             img = Image.fromarray(get_libero_image(obs, resize_size))
-                            image_task_path = os.path.join("experiments/robot/libero/analysis/images", str(task_id))
+                            image_task_path = os.path.join(f"experiments/robot/libero/analysis/{cfg.task_suite_name}_new/{task_id}/images", f"ep_{episode_idx}")
                             os.makedirs(image_task_path, exist_ok=True)
                             image_path = os.path.join(image_task_path, str(t) + ".png")
                             img.save(image_path)
 
-                            results_path = os.path.join("experiments/robot/libero/analysis", str(task_id) + "_task.jsonl")
+                            results_path = os.path.join(f"experiments/robot/libero/analysis/{cfg.task_suite_name}_new/{task_id}", f"ep_{episode_idx}.jsonl")
                             result = {
-                                "step": t,
                                 "reasoning": reasoning,
+                                "step": t,
                             }
                             with open(results_path, "a") as f:
                                 f.write(json.dumps(result) + "\n")

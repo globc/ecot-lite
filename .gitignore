@@ -151,3 +151,8 @@ data/
 # Rollout videos and wandb logs
 rollouts/
 wandb/
+out/
+libero_90 rollouts/
+experiments/logs/
+experiments/robot/libero/analysis/
+experiments/robot/libero/libero_90_tasks/
