@@ -36,7 +36,7 @@ class OpenVLA(PrismaticVLM):
         self.norm_stats = norm_stats
         self.action_tokenizer = action_tokenizer
 
-        self.use_cot = False # Change to get baseline w/o CoT
+        self.use_cot = True
         self.use_async = False
         self.use_interactive = False
 

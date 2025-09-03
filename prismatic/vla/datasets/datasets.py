@@ -72,6 +72,7 @@ class RLDSBatchTransform:
     use_wrist_image: bool = False
     print_prompt_limit: int = 20
     reasoning_dropout_prob: float = 0.0
+    use_cot: bool = True
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
@@ -104,19 +105,17 @@ class RLDSBatchTransform:
             action = action[-self.action_tokenizer.required_future_horizon - 1 :]
 
         tokenized_action = self.action_tokenizer(action)
-        raw_action_tokens = self.base_tokenizer(tokenized_action)["input_ids"]
-
-        use_cot = False # Change to get baseline w/o CoT
 
         delim = ";\n" if reasoning != "" else ""
-        target = f"{reasoning}{delim}{CotTag.ACTION.value} {tokenized_action}" if use_cot else tokenized_action
+        target = f"{reasoning}{delim}{CotTag.ACTION.value} {tokenized_action}" if self.use_cot else tokenized_action
         conversation.extend(
             [
                 {"from": "human", "value": f"What action should the robot take to {lang}?"},
                 {"from": "gpt", "value": target},
             ]
         )
-        num_answer_tokens = len(raw_action_tokens)
+        raw_answer_tokens = self.base_tokenizer(target)["input_ids"]
+        num_answer_tokens = len(raw_answer_tokens)
 
         # Construct Chat-based Prompt
         prompt_builder = self.prompt_builder_fn("openvla")
@@ -144,7 +143,7 @@ class RLDSBatchTransform:
             # Qwen has <|im_end|><|endoftext|> for example
             num_end_tokens = 2
 
-        # labels[: -(num_answer_tokens + num_end_tokens)] = IGNORE_INDEX
+        labels[: -(num_answer_tokens + num_end_tokens)] = IGNORE_INDEX
         if not self.predict_stop_token:
             labels[-num_end_tokens:] = IGNORE_INDEX
 

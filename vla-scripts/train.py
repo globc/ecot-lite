@@ -100,6 +100,7 @@ class TrainConfig:
 
         self.image_sequence_len = self.vla.image_sequence_len
         self.use_wrist_image = self.vla.use_wrist_image
+        self.use_cot = self.vla.use_cot
 
         # [Validate] Assert on `expected_world_size`
         assert (
@@ -214,6 +215,7 @@ def train(cfg: TrainConfig) -> None:
         # if using wrist images, we assume we passed in a 2x image sequence len
         image_window_size=cfg.image_sequence_len // 2 if cfg.use_wrist_image else cfg.image_sequence_len,
         use_wrist_image=cfg.use_wrist_image,  # will double the sequence length
+        use_cot=cfg.use_cot,
     )
 
     # Save dataset statistics for de-normalization at inference time

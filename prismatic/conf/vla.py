@@ -51,6 +51,7 @@ class VLAConfig(ChoiceRegistry):
 
     image_sequence_len: int
     use_wrist_image: bool
+    use_cot: bool
 
     # Enable Gradient/Activation Checkpointing (for the LLM Backbone)
     enable_gradient_checkpointing: bool = True      # Enable Gradient/Activation Checkpointing during Training
@@ -73,6 +74,7 @@ class Exp_SigLIP_224px_Bridge(VLAConfig):
 
     image_sequence_len: int = 1
     use_wrist_image: bool = False
+    use_cot: bool = True
 
     freeze_vision_backbone: bool = False
     freeze_llm_backbone: bool = False

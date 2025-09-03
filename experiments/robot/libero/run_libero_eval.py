@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional, Union
 from PIL import Image
 import torch
-import torch.distributed as dist
+import torch.multiprocessing as mp
 
 import draccus
 import numpy as np
@@ -53,6 +53,9 @@ from experiments.robot.robot_utils import (
     invert_gripper_action,
     normalize_gripper_action,
     set_seed_everywhere,
+    draw_bboxes,
+    draw_gripper,
+    make_reasoning_image,
 )
 
 
@@ -89,31 +92,30 @@ class GenerateConfig:
     prefix: str = ''
 
     use_wandb: bool = False                          # Whether to also log results in Weights & Biases
-    wandb_project: str = "prismatic"        # Name of W&B project to log to (use default!)
-    wandb_entity: Optional[str] = None          # Name of entity to log under
+    wandb_project: str = "prismatic"                 # Name of W&B project to log to (use default!)
+    wandb_entity: Optional[str] = None               # Name of entity to log under
 
     seed: int = 7                                    # Random Seed (for reproducibility)
 
-    distributed: bool = False              # Enable torch.distributed
+    use_cot: bool = True                                # Whether to use ECOT
 
-    subset_size: Optional[int] = None # Sample subset of tasks from task suite
-    num_open_loop_steps: int = 8                     # Number of actions to execute open-loop before requerying policy (AC size)
-    save_reasoning: bool = False                # Save reasoning and image per step
-    unnorm_key: str = "libero_lm_90"  # Action un-normalization key
+    n_procs_per_gpu: int = 1                         # Number of processes to launch on each GPU
+    subset_size: int = 1                             # Split tasks into subset_size chunks
+    subset: int = 0                                  # Which chunk to evaluate
+    num_open_loop_steps: int = 10                    # Number of actions to execute open-loop
+    save_reasoning: bool = False                     # Save reasoning images
+    unnorm_key: str = "libero_lm_90"                 # Action un-normalization key
+
+    output_dir: str = "out"                          # Output results file
+
     # fmt: on
 
 
-@draccus.wrap()
-def eval_libero(cfg: GenerateConfig) -> None:
-    if cfg.distributed:
-        if not dist.is_initialized():
-            dist.init_process_group(
-                backend="nccl"
-            )
-        # After init, sync actual rank and world size
-        cfg.rank = dist.get_rank()
-        cfg.world_size = dist.get_world_size()
-        torch.cuda.set_device(cfg.rank % torch.cuda.device_count())
+def _eval_libero_main(cfg: GenerateConfig) -> None:
+    if not hasattr(cfg, "rank"):
+        cfg.rank = 0
+    if not hasattr(cfg, "world_size"):
+        cfg.world_size = 1
 
     assert cfg.pretrained_checkpoint is not None, "cfg.pretrained_checkpoint must not be None!"
     if "image_aug" in cfg.pretrained_checkpoint:
@@ -123,10 +125,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
     # Set random seed
     set_seed_everywhere(cfg.seed)
 
-    # [OpenVLA] Set action un-normalization key
-
-    # Load model
+    # Load model (each process loads its own model)
     model = get_model(cfg)
+    model.enable_cot(cfg.use_cot)
 
     # [OpenVLA] Check that the model contains the action un-normalization key
     if cfg.model_family in ["openvla", "prismatic"]:
@@ -141,16 +142,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
     if cfg.model_family == "openvla":
         processor = get_processor(cfg)
 
-    # Initialize local logging
+    # Initialize local logging — make per-rank log file so multiple processes don't overwrite
     run_id = f"{cfg.prefix}EVAL-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
+    run_id = f"{run_id}-r{cfg.rank}"  # append rank to keep logs separate
     os.makedirs(cfg.local_log_dir, exist_ok=True)
     local_log_filepath = os.path.join(cfg.local_log_dir, run_id + ".txt")
     log_file = open(local_log_filepath, "w")
-    print(f"Logging to local log file: {local_log_filepath}")
+    print(f"[rank {cfg.rank}] Logging to local log file: {local_log_filepath}")
 
-    # Initialize Weights & Biases logging as well
+    # Initialize Weights & Biases logging as well (each worker gets its own run name to avoid collisions)
     if cfg.use_wandb:
         wandb.init(
             entity=cfg.wandb_entity,
@@ -162,7 +164,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
-    print(f"Task suite: {cfg.task_suite_name}")
+    print(f"[rank {cfg.rank}] Task suite: {cfg.task_suite_name}")
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
 
     # Get expected image dimensions
@@ -172,19 +174,14 @@ def eval_libero(cfg: GenerateConfig) -> None:
     total_episodes, total_successes = 0, 0
     task_ids = list(range(num_tasks_in_suite))
     if cfg.subset_size is not None:
-        rng = np.random.RandomState(cfg.seed)
-        task_ids = rng.choice(task_ids, size=min(cfg.subset_size, num_tasks_in_suite), replace=False).tolist()
-        task_ids.sort()
-        print(f"Sampled task IDs: {task_ids}")
+        chunk_size = len(task_ids) // cfg.subset_size
+        task_ids = task_ids[cfg.subset * chunk_size : (cfg.subset + 1) * chunk_size]
+        print(f"[rank {cfg.rank}] Sampled task IDs: {task_ids}")
         log_file.write(f"Sampled task IDs: {task_ids}\n")
 
-    # Distribute sampled tasks
-    if cfg.distributed:
-        my_task_ids = task_ids[cfg.rank :: cfg.world_size]
-    else:
-        my_task_ids = task_ids
+    my_task_ids = task_ids[cfg.rank :: cfg.world_size]
 
-    print(f"Rank {cfg.rank} → evaluating tasks: {my_task_ids}")
+    print(f"[rank {cfg.rank}] → evaluating tasks: {my_task_ids}")
     for task_id in tqdm.tqdm(my_task_ids, desc=f"Rank {cfg.rank} tasks"):
         # Get task
         task = task_suite.get_task(task_id)
@@ -198,7 +195,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
-            print(f"\nTask: {task_description}")
+            print(f"\n[rank {cfg.rank}] Task: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
 
             # Reset environment
@@ -208,9 +205,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
             obs = env.set_init_state(initial_states[episode_idx])
 
             action_queue = deque(maxlen=cfg.num_open_loop_steps)
+            reasoning = ""
             # Setup
             t = 0
             replay_images = []
+            replay_images_reason = []
             replay_wrist_images = []
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
@@ -223,8 +222,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
 
-            print(f"Starting episode {task_episodes+1}...")
+            print(f"[rank {cfg.rank}] Starting episode {task_episodes+1}...")
             log_file.write(f"Starting episode {task_episodes+1}...\n")
+            done = False
             while t < max_steps + cfg.num_steps_wait:
                 try:
                     # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -280,22 +280,16 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         )
                         action_queue.extend(actions)
 
-                        if cfg.save_reasoning:
-                            img = Image.fromarray(get_libero_image(obs, resize_size))
-                            image_task_path = os.path.join(f"experiments/robot/libero/analysis/{cfg.task_suite_name}_new/{task_id}/images", f"ep_{episode_idx}")
-                            os.makedirs(image_task_path, exist_ok=True)
-                            image_path = os.path.join(image_task_path, str(t) + ".png")
-                            img.save(image_path)
-
-                            results_path = os.path.join(f"experiments/robot/libero/analysis/{cfg.task_suite_name}_new/{task_id}", f"ep_{episode_idx}.jsonl")
-                            result = {
-                                "reasoning": reasoning,
-                                "step": t,
-                            }
-                            with open(results_path, "a") as f:
-                                f.write(json.dumps(result) + "\n")
-
                     action = action_queue.popleft()
+
+                    if cfg.save_reasoning:
+                        img = get_libero_image(obs, resize_size=(640, 480))
+                        reasoning_img, metadata = make_reasoning_image(reasoning)
+                        draw_gripper(img, metadata["gripper"])
+                        draw_bboxes(img, metadata["bboxes"])
+                        reason_img = np.concatenate([img, reasoning_img], axis=1)
+
+                        replay_images_reason.append(reason_img)
 
                     # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
                     action = normalize_gripper_action(action, binarize=True)
@@ -323,7 +317,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(
-                replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
+                replay_images_reason if cfg.save_reasoning else replay_images,
+                total_episodes,
+                success=done,
+                task_description=task_description,
+                log_file=log_file,
+                output_dir=cfg.output_dir,
             )
 
             # Save the videos to wandb
@@ -335,17 +334,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 )
 
             # Log current results
-            print(f"Success: {done}")
-            print(f"# episodes completed so far: {total_episodes}")
-            print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+            print(f"[rank {cfg.rank}] Success: {done}")
+            print(f"[rank {cfg.rank}] # episodes completed so far: {total_episodes}")
+            print(f"[rank {cfg.rank}] # successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
             log_file.flush()
 
         # Log final results
-        print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        print(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        print(f"[rank {cfg.rank}] Current task success rate: {float(task_successes) / float(task_episodes)}")
+        print(f"[rank {cfg.rank}] Current total success rate: {float(total_successes) / float(total_episodes)}")
         log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
         log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
         log_file.flush()
@@ -357,7 +356,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 }
             )
 
-        results_path = os.path.join("experiments/robot/libero", run_id + "_results.jsonl")
+        results_path = os.path.join(f"experiments/robot/libero/results/{cfg.output_dir}", cfg.output_dir + ".jsonl")
+        os.makedirs(results_path, exist_ok=True)
         result = {
             "task_id": task_id,
             "task_description": task_description,
@@ -380,6 +380,28 @@ def eval_libero(cfg: GenerateConfig) -> None:
             }
         )
         wandb.save(local_log_filepath)
+
+def _mp_entry(rank, cfg, nprocs):
+    cfg.rank = int(rank)
+    cfg.world_size = int(nprocs)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(0)
+    _eval_libero_main(cfg)
+
+@draccus.wrap()
+def eval_libero(cfg: GenerateConfig) -> None:
+    # Multi-process on single GPU
+    if cfg.n_procs_per_gpu is not None and int(cfg.n_procs_per_gpu) > 1:
+        nprocs = int(cfg.n_procs_per_gpu)
+        mp.spawn(_mp_entry, args=(cfg, nprocs), nprocs=nprocs, join=True)
+        return
+
+    # Single-process
+    cfg.rank = 0
+    cfg.world_size = 1
+    if torch.cuda.is_available():
+        torch.cuda.set_device(0)
+    _eval_libero_main(cfg)
 
 
 if __name__ == "__main__":
