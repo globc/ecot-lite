@@ -38,6 +38,7 @@ import wandb
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
 from experiments.robot.libero.libero_utils import (
+    get_expanded_libero_env,
     get_libero_dummy_action,
     get_libero_env,
     get_libero_image,
@@ -107,6 +108,12 @@ class GenerateConfig:
     unnorm_key: str = "libero_lm_90"                 # Action un-normalization key
 
     output_dir: str = "out"                          # Output results file
+
+    expansion_half_len_factor: float = 0.0           # Factor by which to expand half lengths of initial state regions
+    ood_only: bool = False                           # Whether to only sample states in the expanded part
+
+    min_distractors: int = 0                         # Minimum number of distractors to add to scenes
+    max_distractors: int = 0                         # Maximum number of distractors to add to scenes (recommended <=2)
 
     # fmt: on
 
@@ -190,11 +197,43 @@ def _eval_libero_main(cfg: GenerateConfig) -> None:
         initial_states = task_suite.get_task_init_states(task_id)
 
         # Initialize LIBERO environment and task description
-        env, task_description = get_libero_env(task, cfg.model_family, resolution=resize_size)
+        if cfg.expansion_half_len_factor > 0 or cfg.min_distractors > 0:
+            print(f"Expansion Half Len Factor: {cfg.expansion_half_len_factor}")
+            print(f"OOD Positions Only? {cfg.ood_only}")
+            print(f"Num Distractors Added? Between {cfg.min_distractors} and {cfg.max_distractors}")
+
+            # Wait to create the environment at the beginning of every episode if we are adding distractors.
+            # This is so that distractors get randomized for each episode.
+            if cfg.min_distractors == 0:
+                env, task_description = get_expanded_libero_env(
+                    task,
+                    expansion_half_len_factor=cfg.expansion_half_len_factor,
+                    ood_only=cfg.ood_only,
+                    min_distractors=cfg.min_distractors,
+                    max_distractors=cfg.max_distractors,
+                    seed=cfg.seed,
+                    distractor_seed=cfg.seed,
+                    resolution=resize_size,
+                )
+        else:
+            env, task_description = get_libero_env(task, cfg.model_family, resolution=resize_size)
 
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
+
+            if cfg.min_distractors > 0:
+                env, task_description = get_expanded_libero_env(
+                    task,
+                    expansion_half_len_factor=cfg.expansion_half_len_factor,
+                    ood_only=cfg.ood_only,
+                    min_distractors=cfg.min_distractors,
+                    max_distractors=cfg.max_distractors,
+                    seed=int(1e5) * cfg.seed + task_id * cfg.num_trials_per_task + episode_idx,
+                    distractor_seed=int(1e5) * cfg.seed + task_id * cfg.num_trials_per_task + episode_idx,
+                    resolution=resize_size,
+                )
+
             print(f"\n[rank {cfg.rank}] Task: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
 
@@ -202,7 +241,8 @@ def _eval_libero_main(cfg: GenerateConfig) -> None:
             env.reset()
 
             # Set initial states
-            obs = env.set_init_state(initial_states[episode_idx])
+            if not (cfg.expansion_half_len_factor > 0 or cfg.min_distractors > 0):
+                obs = env.set_init_state(initial_states[episode_idx])
 
             action_queue = deque(maxlen=cfg.num_open_loop_steps)
             reasoning = ""
@@ -357,7 +397,7 @@ def _eval_libero_main(cfg: GenerateConfig) -> None:
             )
 
         results_path = os.path.join(f"experiments/robot/libero/results/{cfg.output_dir}", cfg.output_dir + ".jsonl")
-        os.makedirs(results_path, exist_ok=True)
+        os.makedirs(os.path.dirname(results_path), exist_ok=True)
         result = {
             "task_id": task_id,
             "task_description": task_description,
