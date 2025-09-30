@@ -261,6 +261,8 @@ def _eval_libero_main(cfg: GenerateConfig) -> None:
                 max_steps = 520  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
+            elif cfg.task_suite_name == "libero_generalize":
+                max_steps = 400  # from libero_90
 
             print(f"[rank {cfg.rank}] Starting episode {task_episodes+1}...")
             log_file.write(f"Starting episode {task_episodes+1}...\n")
@@ -311,13 +313,14 @@ def _eval_libero_main(cfg: GenerateConfig) -> None:
 
                     if len(action_queue) == 0:
                         # Query model to get action
-                        actions, reasoning = get_action(
-                            cfg,
-                            model,
-                            observation,
-                            task_description,
-                            processor=processor,
-                        )
+                        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                            actions, reasoning = get_action(
+                                cfg,
+                                model,
+                                observation,
+                                task_description,
+                                processor=processor,
+                            )
                         action_queue.extend(actions)
 
                     action = action_queue.popleft()
@@ -362,7 +365,7 @@ def _eval_libero_main(cfg: GenerateConfig) -> None:
                 success=done,
                 task_description=task_description,
                 log_file=log_file,
-                output_dir=cfg.output_dir,
+                output_dir=f"experiments/robot/libero/results/{cfg.output_dir}",
             )
 
             # Save the videos to wandb

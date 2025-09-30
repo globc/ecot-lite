@@ -5,26 +5,25 @@ Given an HF-exported OpenVLA model, attempt to load via AutoClasses, and verify 
 """
 
 import time
-
+import json
 import numpy as np
 import torch
 from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
 
 # === Verification Arguments
-MODEL_PATH = "openvla/openvla-7b"
+MODEL_PATH = "/pfss/mlde/workspaces/mlde_wsp_Rohrbach/users/cb14syta/ecot-lite/out_openvla_ecot_lora/ecot-openvla-7b-oxe+libero_lm_90+b8+lr-0.0005+lora-r32+dropout-0.0--image_aug--20000_chkpt"
 SYSTEM_PROMPT = (
     "A chat between a curious user and an artificial intelligence assistant. "
     "The assistant gives helpful, detailed, and polite answers to the user's questions."
 )
-INSTRUCTION = "put spoon on towel"
 
 
 def get_openvla_prompt(instruction: str) -> str:
     if "v01" in MODEL_PATH:
         return f"{SYSTEM_PROMPT} USER: What action should the robot take to {instruction.lower()}? ASSISTANT:"
     else:
-        return f"In: What action should the robot take to {instruction.lower()}?\nOut:"
+        return f"In: What action should the robot take to {instruction.lower()}?\nOut: PLAN:"
 
 
 @torch.inference_mode()
@@ -68,10 +67,13 @@ def verify_openvla() -> None:
     #     trust_remote_code=True,
     # )
 
-    print("[*] Iterating with Randomly Generated Images")
-    for _ in range(100):
-        prompt = get_openvla_prompt(INSTRUCTION)
-        image = Image.fromarray(np.asarray(np.random.rand(256, 256, 3) * 255, dtype=np.uint8))
+    print("[*] Iterating Tasks")
+    with open("/pfss/mlde/workspaces/mlde_wsp_Rohrbach/users/cb14syta/ecot-lite/experiments/robot/libero/libero_90_tasks/tasks.jsonl", 'r') as file:
+        tasks = [json.loads(line) for line in file]
+
+    for record in tasks:
+        prompt = get_openvla_prompt(record["task_description"])
+        image = Image.open(f"/pfss/mlde/workspaces/mlde_wsp_Rohrbach/users/cb14syta/ecot-lite/experiments/robot/libero/libero_90_tasks/images/{record['task_id']}.png").convert("RGB")
 
         # === BFLOAT16 MODE ===
         inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
@@ -81,8 +83,11 @@ def verify_openvla() -> None:
 
         # Run OpenVLA Inference
         start_time = time.time()
-        action = vla.predict_action(**inputs, unnorm_key="bridge_orig", do_sample=False)
+        inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
+        action, generated_ids = vla.predict_action(**inputs, unnorm_key="libero_lm_90", max_new_tokens=1024)
+        generated_text = processor.batch_decode(generated_ids)[0]
         print(f"\t=>> Time: {time.time() - start_time:.4f} || Action: {action}")
+        print(generated_text)
 
 
 if __name__ == "__main__":

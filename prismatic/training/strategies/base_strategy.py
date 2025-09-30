@@ -26,12 +26,10 @@ from prismatic.util import check_bloat16_supported
 from prismatic.util.batching_utils import SplitModalitySampler
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction, PaddedCollatorForLanguageModeling
 from prismatic.vla.action_tokenizer import ActionTokenizer
+from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
-
-# Qwen EOS Token
-EOS_TOKEN = 151643
 
 # === Abstract Base Class for an arbitrary Training Strategy ===
 class TrainingStrategy(ABC):
@@ -422,7 +420,8 @@ class TrainingStrategy(ABC):
                 action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
 
                 # Compute Accuracy on non-action (ie CoT) tokens
-                cot_mask = (token_gt > EOS_TOKEN) & ~action_mask
+                eos_token = 151643 if isinstance(self.vlm.llm_backbone.tokenizer, Qwen2TokenizerFast) else 2 # Else LLama
+                cot_mask = (token_gt > eos_token) & ~action_mask
                 correct_cot_preds = (token_preds == token_gt) & cot_mask
                 cot_accuracy = correct_cot_preds.sum().float() / cot_mask.sum().float()
 

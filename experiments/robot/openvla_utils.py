@@ -171,7 +171,7 @@ def apply_center_crop(im, t_h, t_w):
     return im[..., crop_h : crop_h + t_h, crop_w : crop_w + t_w, :]
 
 
-def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False):
+def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, task_id=None):
     """Generates an action with the VLA policy."""
 
     # only supports 1 image
@@ -218,11 +218,11 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
     inputs = processor(prompt, image).to(DEVICE, dtype=torch.bfloat16)
 
     # Get action.
-    actions, reasoning = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
+    actions, reasoning = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False, task_id=task_id)
     return [actions[0, i] for i in range(actions.shape[1])], reasoning
 
 
-def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, **kwargs):
+def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, task_id=None, **kwargs):
     """Generates an action with the VLA policy."""
 
     if not isinstance(obs["full_image"], list):
@@ -258,6 +258,6 @@ def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unn
     if len(processed_images) == 1:
         processed_images = processed_images[0]
 
-    actions, reasoning = vla.predict_action(processed_images, task_label, unnorm_key=unnorm_key, **kwargs)
+    actions, reasoning = vla.predict_action(processed_images, task_label, unnorm_key=unnorm_key, task_id=task_id, **kwargs)
 
     return [actions[0, i] for i in range(actions.shape[1])], reasoning

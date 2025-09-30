@@ -369,6 +369,10 @@ def apply_trajectory_transforms(
 
         dataset = dataset.filter(lambda x: tf.math.reduce_any(x["task"]["language_instruction"] != ""))
 
+    skip_no_reasoning = True
+    if skip_no_reasoning:
+        dataset = dataset.filter(lambda x: tf.math.reduce_any(tf.not_equal(x["reasoning"], "")))
+
     if max_action is not None:
         dataset = dataset.filter(lambda x: tf.math.reduce_all(tf.math.abs(x["action"]) <= max_action))
 

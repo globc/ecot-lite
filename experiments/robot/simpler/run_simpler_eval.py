@@ -20,9 +20,13 @@ Usage:
 import itertools
 import os
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
+from PIL import Image
+import torch.distributed as dist
+import torch
 
 import draccus
 import numpy as np
@@ -91,11 +95,30 @@ class GenerateConfig:
 
     seed: int = 7                                    # Random Seed (for reproducibility)
 
+    use_cot: bool = True                                # Whether to use ECOT
+
+    subset_size: int = 1                             # Split tasks into subset_size chunks
+    subset: int = 0                                  # Which chunk to evaluate
+    num_open_loop_steps: int = 10                    # Number of actions to execute open-loop
+    save_reasoning: bool = False                     # Save reasoning images
+    unnorm_key: str = "bridge_orig"                  # Action un-normalization key
+
+    output_dir: str = "out"                          # Output results file
+
     # fmt: on
 
 
 @draccus.wrap()
 def eval_simpler(cfg: GenerateConfig) -> None:
+    if not dist.is_initialized():
+        dist.init_process_group(
+                backend="nccl"
+            )
+    # After init, sync actual rank and world size
+    cfg.rank = dist.get_rank()
+    cfg.world_size = dist.get_world_size()
+    torch.cuda.set_device(cfg.rank % torch.cuda.device_count())
+
     assert cfg.pretrained_checkpoint is not None, "cfg.pretrained_checkpoint must not be None!"
     if "image_aug" in cfg.pretrained_checkpoint:
         assert cfg.center_crop, "Expecting `center_crop==True` because model was trained with image augmentations!"
@@ -104,14 +127,21 @@ def eval_simpler(cfg: GenerateConfig) -> None:
     # Set random seed
     set_seed_everywhere(cfg.seed)
 
-    # [OpenVLA] Set action un-normalization key
-    if cfg.model_family == "prismatic":
-        cfg.unnorm_key = "bridge_dataset"
-    else:
-        cfg.unnorm_key = "bridge_orig"
-
     # Load model
     model = get_model(cfg)
+    if "ecot-openvla-7b-bridge" in cfg.pretrained_checkpoint:
+        from experiments.robot.ecot_utils import (
+            draw_bboxes,
+            draw_gripper,
+            make_reasoning_image,
+        )
+    else:
+        model.enable_cot(cfg.use_cot)
+        from experiments.robot.robot_utils import (
+            draw_bboxes,
+            draw_gripper,
+            make_reasoning_image,
+        )
 
     # [OpenVLA] Check that the model contains the action un-normalization key
     if cfg.model_family in ["openvla", "prismatic"]:
@@ -130,10 +160,11 @@ def eval_simpler(cfg: GenerateConfig) -> None:
     run_id = f"{cfg.prefix}EVAL-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
+    run_id = f"{run_id}-r{cfg.rank}"  # append rank to keep logs separate
     os.makedirs(cfg.local_log_dir, exist_ok=True)
     local_log_filepath = os.path.join(cfg.local_log_dir, run_id + ".txt")
     log_file = open(local_log_filepath, "w")
-    print(f"Logging to local log file: {local_log_filepath}")
+    print(f"[rank {cfg.rank}] Logging to local log file: {local_log_filepath}")
 
     # Initialize Weights & Biases logging as well
     if cfg.use_wandb:
@@ -147,7 +178,7 @@ def eval_simpler(cfg: GenerateConfig) -> None:
 
     task_suite = get_benchmark(cfg.task_suite_name)()
     num_tasks_in_suite = task_suite.n_tasks
-    print(f"Task suite: {cfg.task_suite_name}")
+    print(f"[rank {cfg.rank}] Task suite: {cfg.task_suite_name}")
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
 
     # Get expected image dimensions
@@ -155,7 +186,12 @@ def eval_simpler(cfg: GenerateConfig) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    task_ids = list(range(num_tasks_in_suite))
+
+    my_task_ids = task_ids[cfg.rank :: cfg.world_size]
+
+    print(f"[rank {cfg.rank}] → evaluating tasks: {my_task_ids}")
+    for task_id in tqdm.tqdm(my_task_ids, desc=f"Rank {cfg.rank} tasks"):
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -174,15 +210,17 @@ def eval_simpler(cfg: GenerateConfig) -> None:
         # Start episodes
         task_episodes, task_successes = 0, 0
         for _ in tqdm.tqdm(range(cfg.num_trials_per_task)):
-            print(f"\nTask: {task_description}")
+            print(f"\n[rank {cfg.rank}] Task: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
 
             # Reset environment to specified seed (initial state)
             obs, reset_info = env.reset(seed=next(seeds))
 
+            reasoning = ""
             # Setup
             t = 0
             replay_images = []
+            replay_images_reason = []
             replay_wrist_images = []
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
@@ -199,8 +237,9 @@ def eval_simpler(cfg: GenerateConfig) -> None:
             else:
                 raise NotImplementedError
 
-            print(f"Starting episode {task_episodes+1}...")
+            print(f"[rank {cfg.rank}] Starting episode {task_episodes+1}...")
             log_file.write(f"Starting episode {task_episodes+1}...\n")
+            done = False
             while t < max_steps + cfg.num_steps_wait:
                 # try:
                 # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -245,13 +284,22 @@ def eval_simpler(cfg: GenerateConfig) -> None:
                 }
 
                 # Query model to get action
-                action = get_action(
+                action, reasoning = get_action(
                     cfg,
                     model,
                     observation,
                     task_description,
                     processor=processor,
                 )
+
+                if cfg.save_reasoning:
+                    img = get_simpler_img(env, obs, resize_size=(640, 480))
+                    reasoning_img, metadata = make_reasoning_image(reasoning)
+                    draw_gripper(img, metadata["gripper"])
+                    draw_bboxes(img, metadata["bboxes"])
+                    reason_img = np.concatenate([img, reasoning_img], axis=1)
+
+                    replay_images_reason.append(reason_img)
 
                 # TODO figure out if below is libero only
                 # # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
@@ -279,7 +327,12 @@ def eval_simpler(cfg: GenerateConfig) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(
-                replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
+                replay_images_reason if cfg.save_reasoning else replay_images,
+                total_episodes,
+                success=done,
+                task_description=task_description,
+                log_file=log_file,
+                output_dir=f"experiments/robot/simpler/results/{cfg.output_dir}",
             )
 
             # Save at most 5 successes and at most 5 failures
@@ -291,17 +344,17 @@ def eval_simpler(cfg: GenerateConfig) -> None:
                 )
 
             # Log current results
-            print(f"Success: {done}")
-            print(f"# episodes completed so far: {total_episodes}")
-            print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+            print(f"[rank {cfg.rank}] Success: {done}")
+            print(f"[rank {cfg.rank}] # episodes completed so far: {total_episodes}")
+            print(f"[rank {cfg.rank}] # successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
             log_file.flush()
 
         # Log final results
-        print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        print(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        print(f"[rank {cfg.rank}] Current task success rate: {float(task_successes) / float(task_episodes)}")
+        print(f"[rank {cfg.rank}] Current total success rate: {float(total_successes) / float(total_episodes)}")
         log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
         log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
         log_file.flush()
@@ -312,6 +365,18 @@ def eval_simpler(cfg: GenerateConfig) -> None:
                     f"num_episodes/{task_description}": task_episodes,
                 }
             )
+
+        results_path = os.path.join(f"experiments/robot/simpler/results/{cfg.output_dir}", cfg.output_dir + ".jsonl")
+        os.makedirs(os.path.dirname(results_path), exist_ok=True)
+        result = {
+            "task_id": task_id,
+            "task_description": task_description,
+            "task_successes": task_successes,
+            "task_episodes": task_episodes,
+            "task_success_rate": float(task_successes) / float(task_episodes),
+        }
+        with open(results_path, "a") as f:
+            f.write(json.dumps(result) + "\n")
 
     # Save local log file
     log_file.close()

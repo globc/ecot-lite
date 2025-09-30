@@ -83,16 +83,16 @@ def get_image_resize_size(cfg):
     return resize_size
 
 
-def get_action(cfg, model, obs, task_label, processor=None):
+def get_action(cfg, model, obs, task_label, processor=None, task_id=None):
     """Queries the model to get an action."""
     if cfg.model_family == "prismatic":
         action, reasoning = get_prismatic_vla_action(
-            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop=cfg.center_crop
+            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop=cfg.center_crop, task_id=task_id
         )
         # assert action.shape == (ACTION_DIM,)
     elif cfg.model_family == "openvla":
         action, reasoning = get_vla_action(
-            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop=cfg.center_crop
+            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop=cfg.center_crop, task_id=task_id
         )
         # assert action.shape == (ACTION_DIM,)
     else:
@@ -211,7 +211,7 @@ def draw_bboxes(img, bboxes, img_size=(640, 480)):
         cv2.putText(
             img,
             show_name,
-            resize_pos((bbox[0], bbox[1] + 6), img_size),
+            resize_pos((bbox[1], bbox[0] + 6), img_size),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             (255, 255, 255),

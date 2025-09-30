@@ -23,6 +23,31 @@ from prismatic.util.cot_utils import CotTag
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
 
+LIBERO_GENERALIZE_PLANS = [
+    {"0": "move to the beverage", "1": "grasp the beverage", "2": "move the beverage to the basket", "3": "release the beverage into the basket"},
+    {"0": "move to the sweet object", "1": "grasp the sweet object", "2": "move the sweet object to the wooden tray", "3": "release the sweet object into the wooden tray"},
+    {"0": "move to the black book", "1": "grasp the black book", "2": "move the black book to the right of the desk caddy", "3": "release the black book to the right of the desk caddy"},
+    {"0": "move to the left mug", "1": "grasp the left mug", "2": "move the mug to the right of the desk caddy", "3": "release the mug to the right of the desk caddy"},
+    {"0": "move to the mug next to the book", "1": "grasp the mug next to the book", "2": "move the mug to the right of the desk caddy", "3": "release the mug to the right of the desk caddy"},
+    {"0": "move to the right mug", "1": "grasp the right mug", "2": "move the mug to the right of the desk caddy", "3": "release the mug to the right of the desk caddy"},
+    {"0": "move to the black book", "1": "grasp the black book", "2": "move the black book away", "3": "move the book to the shelf", "4": "release the book onto the shelf"},
+    {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move to the shelf", "4": "place the book on top of the shelf", "5": "release the book"},
+    {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move the book to the cabinet", "4": "place the book under the shelf", "5": "release the book"},
+    {"0": "move to the right", "1": "grasp the book", "2": "move the book away from the right", "3": "move to the shelf", "4": "place the book on top of the shelf", "5": "release the book"},
+]
+
+LIBERO_GENERALIZE_SPOIL = [
+    {"0": "move to the orange juice", "1": "grasp the orange juice", "2": "move the orange juice to the basket", "3": "release the orange juice into the basket"},
+    {"0": "move to the chocolate pudding", "1": "grasp the chocolate pudding", "2": "move the chocolate pudding to the wooden tray", "3": "release the chocolate pudding into the wooden tray"},
+    {"0": "move to the black book", "1": "grasp the black book", "2": "move the black book to the right of the desk caddy", "3": "release the black book to the right of the desk caddy"},
+    {"0": "move to the red mug", "1": "grasp the red mug", "2": "move the red mug to the right of the desk caddy", "3": "release the red mug to the right of the desk caddy"},
+    {"0": "move to the white mug", "1": "grasp the white mug", "2": "move the white mug to the right of the desk caddy", "3": "release the white mug to the right of the desk caddy"},
+    {"0": "move to the white mug", "1": "grasp the white mug", "2": "move the white mug to the right of the desk caddy", "3": "release the white mug to the right of the desk caddy"},
+    {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move the book to the shelf", "4": "release the book onto the shelf"},
+    {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move to the shelf", "4": "place the book on top of the shelf", "5": "release the book"},
+    {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move the book to the cabinet", "4": "place the book under the shelf", "5": "release the book"},
+    {"0": "move to the right", "1": "grasp the book", "2": "move the book away from the right", "3": "move to the shelf", "4": "place the book on top of the shelf", "5": "release the book"},
+]
 
 class OpenVLA(PrismaticVLM):
     def __init__(
@@ -86,7 +111,7 @@ class OpenVLA(PrismaticVLM):
                 input_ids=input_ids.to(self.device),
                 pixel_values=pixel_values,
                 max_new_tokens=1024,
-                prefix_allowed_tokens_fn=self.get_prefix_allowed_tokens_fn(),
+                # prefix_allowed_tokens_fn=self.get_prefix_allowed_tokens_fn(),
             )
         else:
             return super(PrismaticVLM, self).generate(
@@ -109,7 +134,7 @@ class OpenVLA(PrismaticVLM):
 
     @torch.inference_mode()
     def predict_action(
-        self, image: Union[Img, List[Img]], instruction: str, unnorm_key: Optional[str] = None, info_dict: Optional[dict] = None, **kwargs: str
+        self, image: Union[Img, List[Img]], instruction: str, unnorm_key: Optional[str] = None, info_dict: Optional[dict] = None, task_id: Optional[int] = None, **kwargs: str
     ) -> np.ndarray:
         """
         Core function for VLA inference; maps input image and task instruction to continuous action (de-tokenizes).
@@ -230,23 +255,27 @@ class OpenVLA(PrismaticVLM):
                         else:
                             prompt = user_response
                 else:
-                    # run generate and wait for the result
-                    # print(f"Prompt freezing: {self.time_frozen} turns left.")
-                    if self.time_frozen <= 0:
-                        self.frozen_prompt = self.base_prompt
-                        self.time_frozen = self.max_freezing_time
+                    if self.max_freezing_time > 0:
+                        if self.time_frozen <= 0:
+                            self.frozen_prompt = self.base_prompt
+                            self.time_frozen = self.max_freezing_time
 
-                    self.time_frozen -= 1
-                    generated_ids = self.raw_generate(build_prompt(self.frozen_prompt, init_input_ids) if self.use_cot else init_input_ids, pixel_values)
+                        self.time_frozen -= 1
+                        generated_ids = self.raw_generate(build_prompt(self.frozen_prompt, init_input_ids) if self.use_cot else init_input_ids, pixel_values)
 
-                    decoded_tokens = self.llm_backbone.tokenizer.decode(generated_ids[0, :-num_end_tokens])
-                    prompt = decoded_tokens.split("assistant\n")[-1]
+                        decoded_tokens = self.llm_backbone.tokenizer.decode(generated_ids[0, :-num_end_tokens])
+                        prompt = decoded_tokens.split("\nOut: ")[-1]
 
-                    if " MOVE REASONING: " in prompt:
-                        prompt = prompt.split(" MOVE REASONING: ")[0]
+                        if ";\nMOVE REASONING: " in prompt:
+                            prompt = prompt.split(";\nMOVE REASONING: ")[0]
+                        else:
+                            prompt = prompt.split(";\nGRIPPER POSITION: ")[0]
+                        self.frozen_prompt = prompt
                     else:
-                        prompt = prompt.split(" GRIPPER POSITION: ")[0]
-                    self.frozen_prompt = prompt
+                        prompt = self.base_prompt
+                        if task_id is not None:
+                            prompt += f" {LIBERO_GENERALIZE_SPOIL[task_id]};\n"
+                        generated_ids = self.raw_generate(build_prompt(prompt, init_input_ids) if self.use_cot else init_input_ids, pixel_values)
 
             generated_ids = generated_ids[:, :-num_end_tokens]  # remove the EOS token
             decoded_tokens = self.llm_backbone.tokenizer.decode(generated_ids[0])

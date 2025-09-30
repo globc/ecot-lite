@@ -37,11 +37,13 @@ def reasoning_dropout(reasoning: str, dropout_prob: float) -> Tuple[str, str]:
     reasoning_parts = reasoning.split("@")
     tags = [(reasoning_parts[i], reasoning_parts[i + 1]) for i in range(0, len(reasoning_parts), 2)]
 
-    k = np.random.randint(0, len(tags) + 1)
-    dropped_idx = np.random.choice(len(tags), size=k, replace=False)
+    subset = np.random.rand(len(tags)) > dropout_prob
     
-    subset = np.ones(len(tags), dtype=bool)
-    subset[dropped_idx] = False
+    # k = np.random.randint(0, len(tags) + 1)
+    # dropped_idx = np.random.choice(len(tags), size=k, replace=False)
+    
+    # subset = np.ones(len(tags), dtype=bool)
+    # subset[dropped_idx] = False
 
     subset_string = (
         "[" + ", ".join([abbreviate_tag(tag) for (tag, _), is_taken in zip(tags, subset) if is_taken]) + "]"
