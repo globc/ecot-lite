@@ -40,13 +40,19 @@ LIBERO_GENERALIZE_SPOIL = [
     {"0": "move to the orange juice", "1": "grasp the orange juice", "2": "move the orange juice to the basket", "3": "release the orange juice into the basket"},
     {"0": "move to the chocolate pudding", "1": "grasp the chocolate pudding", "2": "move the chocolate pudding to the wooden tray", "3": "release the chocolate pudding into the wooden tray"},
     {"0": "move to the black book", "1": "grasp the black book", "2": "move the black book to the right of the desk caddy", "3": "release the black book to the right of the desk caddy"},
+    {"0": "move to the white mug", "1": "grasp the white mug", "2": "move the white mug to the right of the desk caddy", "3": "release the white mug to the right of the desk caddy"},
+    {"0": "move to the white mug", "1": "grasp the white mug", "2": "move the white mug to the right of the desk caddy", "3": "release the white mug to the right of the desk caddy"},
     {"0": "move to the red mug", "1": "grasp the red mug", "2": "move the red mug to the right of the desk caddy", "3": "release the red mug to the right of the desk caddy"},
-    {"0": "move to the white mug", "1": "grasp the white mug", "2": "move the white mug to the right of the desk caddy", "3": "release the white mug to the right of the desk caddy"},
-    {"0": "move to the white mug", "1": "grasp the white mug", "2": "move the white mug to the right of the desk caddy", "3": "release the white mug to the right of the desk caddy"},
     {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move the book to the shelf", "4": "release the book onto the shelf"},
     {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move to the shelf", "4": "place the book on top of the shelf", "5": "release the book"},
     {"0": "move to the middle of the scene", "1": "grasp the book in the middle", "2": "move the book away from the middle", "3": "move the book to the cabinet", "4": "place the book under the shelf", "5": "release the book"},
     {"0": "move to the right", "1": "grasp the book", "2": "move the book away from the right", "3": "move to the shelf", "4": "place the book on top of the shelf", "5": "release the book"},
+    {"0": "move to the moka pot", "1": "grasp the moka pot", "2": "move the moka pot to the stove", "3": "release the moka pot onto the stove"},
+    {"0": "move to the cream cheese", "1": "grasp the cream cheese", "2": "move the cream cheese to the basket", "3": "release the cream cheese into the basket"},
+    {"0": "move to the ketchup", "1": "grasp the ketchup", "2": "move the ketchup to the tray", "3": "release the ketchup into the tray"},
+    {"0": "move to the alphabet soup", "1": "grasp the alphabet soup", "2": "move the alphabet soup to the wooden tray", "3": "release the alphabet soup into the wooden tray"},
+    {"0": "move to the tomato sauce", "1": "grasp the tomato sauce", "2": "move the tomato sauce to the wooden tray", "3": "release the tomato sauce into the wooden tray"},
+    {"0": "move to the red coffee mug", "1": "grasp the red coffee mug", "2": "move the red coffee mug to the right plate", "3": "release the red coffee mug onto the right plate"},
 ]
 
 class OpenVLA(PrismaticVLM):

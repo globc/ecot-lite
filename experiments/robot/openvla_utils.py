@@ -219,7 +219,7 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
 
     # Get action.
     actions, reasoning = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False, task_id=task_id)
-    return [actions[0, i] for i in range(actions.shape[1])], reasoning
+    return actions, reasoning
 
 
 def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, task_id=None, **kwargs):
@@ -260,4 +260,4 @@ def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unn
 
     actions, reasoning = vla.predict_action(processed_images, task_label, unnorm_key=unnorm_key, task_id=task_id, **kwargs)
 
-    return [actions[0, i] for i in range(actions.shape[1])], reasoning
+    return actions, reasoning

@@ -58,7 +58,7 @@ from experiments.robot.robot_utils import (
     draw_gripper,
     make_reasoning_image,
 )
-
+from prismatic.vla.action_tokenizer import VQActionTokenizer
 
 @dataclass
 class GenerateConfig:
@@ -104,6 +104,7 @@ class GenerateConfig:
     subset_size: int = 1                             # Split tasks into subset_size chunks
     subset: int = 0                                  # Which chunk to evaluate
     num_open_loop_steps: int = 10                    # Number of actions to execute open-loop
+    plans: bool = False
     save_reasoning: bool = False                     # Save reasoning images
     unnorm_key: str = "libero_lm_90"                 # Action un-normalization key
 
@@ -312,16 +313,30 @@ def _eval_libero_main(cfg: GenerateConfig) -> None:
                     }
 
                     if len(action_queue) == 0:
-                        # Query model to get action
                         with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                            actions, reasoning = get_action(
-                                cfg,
-                                model,
-                                observation,
-                                task_description,
-                                processor=processor,
-                            )
-                        action_queue.extend(actions)
+                            if cfg.plans:
+                                actions, reasoning = get_action(
+                                    cfg,
+                                    model,
+                                    observation,
+                                    task_description,
+                                    processor=processor,
+                                    task_id=task_id ,
+                                )
+                            else:
+                                actions, reasoning = get_action(
+                                    cfg,
+                                    model,
+                                    observation,
+                                    task_description,
+                                    processor=processor
+                                )
+                        if cfg.model_family == "prismatic" and isinstance(model.action_tokenizer, VQActionTokenizer):
+                            actions = [actions[0, i] for i in range(actions.shape[1])]
+                        else:
+                            actions = [actions]
+                        
+                        action_queue.extend(actions[:cfg.num_open_loop_steps])
 
                     action = action_queue.popleft()
 
